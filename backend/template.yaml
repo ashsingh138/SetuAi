@@ -10,7 +10,7 @@ Globals:
     Runtime: python3.12
     Environment:
       Variables:
-        SESSIONS_TABLE: !Ref UserSessionsTable # FIXED: Added !Ref
+        SESSIONS_TABLE: !Ref UserSessionsTable 
   Api:
     Cors:
       AllowMethods: "'GET,POST,OPTIONS'"
@@ -38,10 +38,10 @@ Resources:
       CodeUri: functions/process_voice/
       Handler: app.lambda_handler
       Layers:
-        - !Ref CommonUtilsLayer # ADDED: Linking the layer to the function
+        - !Ref CommonUtilsLayer 
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref UserSessionsTable # FIXED: Added !Ref
+            TableName: !Ref UserSessionsTable 
         - Statement:
             - Effect: Allow
               Action:
@@ -54,16 +54,16 @@ Resources:
             Path: /api/v1/process-voice
             Method: post
 
-  # 3. Lambda: Generate PDF Application (The Hands)
 
-  # 4. Lambda: Locate CSC Center (The Guide)
+
+  # 4. Lambda: Locate CSC Center 
   LocateCenterFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: functions/locate_center/
       Handler: app.lambda_handler
       Layers:
-        - !Ref CommonUtilsLayer # ADDED: Linking the layer to the function
+        - !Ref CommonUtilsLayer 
       Events:
         LocateCenterApi:
           Type: Api
@@ -84,4 +84,4 @@ Resources:
 Outputs:
   SetuApiUrl:
     Description: "API Gateway endpoint URL for Prod stage"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/api/v1/" # FIXED: Added !Sub
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/api/v1/" 

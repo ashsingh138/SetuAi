@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Square, Send } from 'lucide-react';
 
-export default function ChatInput({ onInput, disabled }) {
+
+export default function ChatInput({ onInput, disabled, languageCode }) {
   const [text, setText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef(null);
@@ -11,7 +12,10 @@ export default function ChatInput({ onInput, disabled }) {
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
       recognition.continuous = false;
-      recognition.lang = 'hi-IN'; 
+      
+      
+      recognition.lang = languageCode || 'en-IN'; 
+      
       recognition.interimResults = false;
 
       recognition.onresult = (event) => {
@@ -30,7 +34,8 @@ export default function ChatInput({ onInput, disabled }) {
 
       recognitionRef.current = recognition;
     }
-  }, [onInput]);
+ 
+  }, [onInput, languageCode]);
 
   const toggleRecording = () => {
     if (disabled) return;
@@ -72,7 +77,7 @@ export default function ChatInput({ onInput, disabled }) {
         onChange={(e) => setText(e.target.value)}
         onKeyPress={handleKeyPress}
         disabled={disabled || isRecording}
-        placeholder={isRecording ? 'सुन रहा हूँ...' : 'Type your message...'}
+        placeholder={isRecording ? 'Listening...' : 'Type your message...'}
         className="flex-1 bg-gray-100 rounded-full px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
       />
       
