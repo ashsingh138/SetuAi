@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Setu AI Backend - Voice-First AI Caseworker for India
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.12
+    Environment:
+      Variables:
+        SESSIONS_TABLE: !Ref UserSessionsTable # FIXED: Added !Ref
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,OPTIONS'"
+      AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      AllowOrigin: "'*'"
+
+Resources:
+  # 1. DynamoDB Table for User Sessions
+  UserSessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: setu-ai-sessions
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # 2. Lambda: Process Voice & Extract Intent (The Brain)
+  ProcessVoiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/process_voice/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonUtilsLayer # ADDED: Linking the layer to the function
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserSessionsTable # FIXED: Added !Ref
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "*"
+      Events:
+        ProcessVoiceApi:
+          Type: Api
+          Properties:
+            Path: /api/v1/process-voice
+            Method: post
+
+  # 3. Lambda: Generate PDF Application (The Hands)
+
+  # 4. Lambda: Locate CSC Center (The Guide)
+  LocateCenterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/locate_center/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonUtilsLayer # ADDED: Linking the layer to the function
+      Events:
+        LocateCenterApi:
+          Type: Api
+          Properties:
+            Path: /api/v1/locate-center
+            Method: get
+
+  # 5. Layer: Shared utility functions
+  CommonUtilsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: setu-common-utils
+      Description: Shared utility functions for Setu AI
+      ContentUri: layers/common_utils/
+      CompatibleRuntimes:
+        - python3.12
+
+Outputs:
+  SetuApiUrl:
+    Description: "API Gateway endpoint URL for Prod stage"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/api/v1/" # FIXED: Added !Sub
