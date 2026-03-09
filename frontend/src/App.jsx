@@ -5,7 +5,7 @@ import PDFPreview from './components/PDFPreview';
 import MapLocator from './components/MapLocator';
 import { processVoice, locateCenter } from './services/api';
 import { generateRealPdf } from './utils/pdfGenerator';
-
+import { Landmark, Sparkles } from 'lucide-react';
 const SUPPORTED_LANGUAGES = {
   'Hindi': { code: 'hi-IN', label: 'हिन्दी', greeting: 'नमस्ते! मैं सेतु हूँ। मैं सरकारी योजनाओं में आपकी मदद कर सकता हूँ। आप क्या सहायता चाहते हैं?' },
   'English': { code: 'en-IN', label: 'English', greeting: 'Hello! I am Setu. I can help you with government schemes. How can I assist you?' },
@@ -134,25 +134,40 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen max-w-md mx-auto bg-white shadow-xl relative overflow-hidden">
-      <header className="bg-blue-600 text-white p-4 shadow-md z-10 flex items-center justify-between">
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <span className="text-3xl">🌉</span> Setu AI
-        </h1>
+    <div className="flex flex-col h-screen max-w-md mx-auto bg-white shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] relative overflow-hidden">
+      
+      <header className="bg-gradient-to-r from-blue-800 via-blue-600 to-indigo-700 text-white p-4 shadow-lg z-10 flex items-center justify-between border-b border-blue-900/20">
+        <div className="flex items-center gap-3">
+        
+          <div className="relative flex items-center justify-center w-11 h-11 bg-white rounded-xl shadow-inner text-blue-700">
+            <Landmark size={24} strokeWidth={2.2} />
+            <div className="absolute -top-1.5 -right-1.5 bg-gradient-to-tr from-yellow-400 to-amber-300 rounded-full p-1 shadow-sm animate-pulse">
+              <Sparkles size={10} className="text-white" />
+            </div>
+          </div>
+          
+          
+          <div className="flex flex-col">
+            <h1 className="text-2xl font-extrabold tracking-tight leading-none drop-shadow-sm">Setu AI</h1>
+            <span className="text-[10px] font-semibold text-blue-100 uppercase tracking-widest mt-1 opacity-90">
+              Digital Caseworker
+            </span>
+          </div>
+        </div>
         
        
         <select 
           value={language} 
           onChange={handleLanguageChange}
-          className="bg-blue-700 text-white text-sm font-medium px-3 py-1.5 rounded-lg border border-blue-400 outline-none focus:ring-2 focus:ring-white cursor-pointer"
+          className="bg-white/10 backdrop-blur-md text-white text-sm font-semibold px-3 py-2 rounded-lg border border-white/20 outline-none focus:ring-2 focus:ring-white hover:bg-white/20 transition-all cursor-pointer shadow-sm"
         >
           {Object.entries(SUPPORTED_LANGUAGES).map(([key, data]) => (
-            <option key={key} value={key}>{data.label}</option>
+            <option key={key} value={key} className="text-gray-900">{data.label}</option>
           ))}
         </select>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-4 space-y-4 pb-32 bg-slate-50">
+      <main className="flex-1 overflow-y-auto p-4 space-y-4 pb-32 bg-[#F3F4F6] bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]">
         <ChatInterface messages={messages} />
         <PDFPreview url={pdfUrl} />
         <MapLocator location={cscLocation} />

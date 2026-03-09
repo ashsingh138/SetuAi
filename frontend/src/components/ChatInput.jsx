@@ -59,7 +59,7 @@ export default function ChatInput({ onInput, disabled, languageCode }) {
   };
 
   return (
-    <footer className="absolute bottom-0 w-full bg-white border-t border-gray-200 p-4 flex items-center gap-3 shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
+    <footer className="absolute bottom-4 left-4 right-4 bg-white/90 backdrop-blur-lg border border-gray-200/50 p-2 rounded-2xl flex items-center gap-2 shadow-[0_8px_30px_rgb(0,0,0,0.12)]">
       <button
         onClick={toggleRecording}
         disabled={disabled}
