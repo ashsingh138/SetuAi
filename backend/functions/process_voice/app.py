@@ -79,7 +79,7 @@ def lambda_handler(event, context):
         {{
             "intent": "discover_schemes, check_specific, apply_scheme, file_rti, or chat",
             "predicted_scheme_name": "Mapped Scheme Name or 'General Discovery'",
-            "entities": {{"key": "English Value of all profile and application data gathered"}},
+            "entities": {{"key": "Directly translate to English. NEVER use placeholders like '[Requires English Translation]'. Just output the translated value."}},
             "missing_fields": ["List of missing details ONLY IF in apply_scheme intent"],
             "eligibility_status": "Eligible / Almost Eligible / Not Eligible / Pending Information / or empty string",
             "eligibility_reason": "Exact numerical reason if checking eligibility, else empty",
