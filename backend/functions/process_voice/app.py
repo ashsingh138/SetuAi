@@ -4,22 +4,19 @@ import uuid
 import os
 import faiss
 import numpy as np
-
+import re
 # --- 1. AWS Services Setup ---
 bedrock = boto3.client(service_name='bedrock-runtime', region_name='us-east-1')
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ.get('SESSIONS_TABLE', 'setu-ai-sessions'))
 
-
 print("Loading FAISS Database...")
 try:
     index = faiss.read_index('schemes_vector_titan.index')
-    
     with open('schemes_metadata_titan.json', 'r', encoding='utf-8') as f:
         metadata_list = json.load(f)
 except Exception as e:
     print(f"Warning: Database files not found. Error: {e}")
-
 
 def get_titan_embedding(text):
     body = json.dumps({"inputText": text})
@@ -29,36 +26,84 @@ def get_titan_embedding(text):
         accept='application/json',
         contentType='application/json'
     )
-    response_body = json.loads(response.get('body').read())
-    return response_body.get('embedding')
+    return json.loads(response.get('body').read()).get('embedding')
 
-def find_best_schemes(user_problem, top_k=3):
-    """Searches the database using AWS Titan Embeddings"""
+# --- 2. THE AI TOOLS (PYTHON FUNCTIONS) ---
+
+def search_eligible_schemes(problem, state, age, gender, caste, income):
+    """Tool 1: Searches the vector DB. Only triggered when AI has all profile data."""
     try:
-        vector = get_titan_embedding(user_problem)
-        distances, indices = index.search(np.array([vector]).astype('float32'), top_k)
+        query = f"Schemes for {problem} in {state} for {gender} age {age} caste {caste} income {income}"
+        vector = get_titan_embedding(query)
+        distances, indices = index.search(np.array([vector]).astype('float32'), 4) # Get top 4
         
-        context = ""
-       
+        results = []
         for idx in indices[0]:
             if idx == -1: continue 
             row = metadata_list[idx] 
-            
-            context += f"Scheme Name: {row.get('scheme_name', 'Unknown')}\n"
-            context += f"Level (State/Central): {row.get('level', 'N/A')}\n"
-            context += f"Category & Tags: {row.get('schemeCategory', '')} | {row.get('tags', '')}\n"
-            context += f"Details: {row.get('details', 'N/A')}\n"
-            context += f"Benefits: {row.get('benefits', 'N/A')}\n"
-            context += f"Eligibility Criteria: {row.get('eligibility', 'N/A')}\n"
-            context += f"Documents Required: {row.get('documents', 'N/A')}\n"
-            context += f"Application Process: {row.get('application', 'N/A')}\n"
-            context += "-" * 50 + "\n\n"
-            
-        return context
+            results.append({
+                "Scheme Name": row.get('scheme_name', 'Unknown'),
+                "Main Benefit": row.get('benefits', 'N/A')
+            })
+        return json.dumps({"status": "success", "eligible_schemes": results})
     except Exception as e:
-        print(f"Search error: {e}")
-        return "Fallback Scheme: Pradhan Mantri Awas Yojana (PMAY)\nEligibility: Below Poverty Line."
+        return json.dumps({"status": "error", "message": str(e)})
 
+def get_scheme_deep_dive(scheme_name):
+    """Tool 2: Gets exact application details when user selects a scheme from the menu."""
+    try:
+        for row in metadata_list:
+            if scheme_name.lower() in row.get('scheme_name', '').lower():
+                return json.dumps({
+                    "Documents Required": row.get('documents', 'N/A'),
+                    "Application Process": row.get('application', 'N/A'),
+                    "Detailed Eligibility": row.get('eligibility', 'N/A')
+                })
+        return json.dumps({"error": "Scheme details not found."})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# --- 3. THE TOOL CONFIGURATION FOR BEDROCK ---
+tool_config = {
+    "tools": [
+        {
+            "toolSpec": {
+                "name": "search_eligible_schemes",
+                "description": "Search the database for eligible government schemes. DO NOT CALL THIS TOOL if any required fields are missing. You must ask the user first.",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "problem": {"type": "string", "description": "The specific help they need (e.g. house, hospital, farming)"},
+                            "state": {"type": "string", "description": "State of residence. IF UNKNOWN, DO NOT USE TOOL. ASK USER."},
+                            "age": {"type": "string", "description": "Age. IF UNKNOWN, DO NOT USE TOOL. ASK USER."},
+                            "gender": {"type": "string", "description": "Gender. IF UNKNOWN, DO NOT USE TOOL. ASK USER."},
+                            "caste": {"type": "string", "description": "General, SC, ST, or OBC. IF UNKNOWN, DO NOT USE TOOL. ASK USER."},
+                            "income": {"type": "string", "description": "Annual income or BPL status. IF UNKNOWN, DO NOT USE TOOL. ASK USER."}
+                        },
+                        "required": ["problem", "state", "age", "gender", "caste", "income"]
+                    }
+                }
+            }
+        },
+        {
+            "toolSpec": {
+                "name": "get_scheme_deep_dive",
+                "description": "Fetch the exact documents required and application process for a specific scheme. Call this when the user chooses a scheme from your menu.",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "scheme_name": {"type": "string"}
+                        },
+                        "required": ["scheme_name"]
+                    }
+                }
+            }
+        }
+    ]
+}
 
 def lambda_handler(event, context):
     try:
@@ -71,126 +116,136 @@ def lambda_handler(event, context):
         if not transcript:
             return _build_response(400, {"error": "Transcript is required"})
 
-        # --- 3. Semantic Search ---
-        live_db_context = find_best_schemes(transcript)
+        # --- 4. THE SYSTEM PROMPT (The Orchestrator) ---
+        system_prompt = f"""
+        You are Setu AI, a professional government caseworker. 
+        Language: {language}
 
-        # --- 4. The Dynamic RAG Prompt ---
-       # THE DYNAMIC PROMPT: Strict Profiling + Anti-Looping State Machine
-        prompt = f"""
-        You are Setu AI, a highly professional, polite, and empathetic government caseworker for citizens in India.
-        User's requested language: {language}
-        
-        PREVIOUS CONVERSATION HISTORY (Use this to remember what the user has ALREADY told you. DO NOT ask for this information again):
-        {chat_history}
-        
-        CURRENT MESSAGE: "{transcript}"
-        
-        --- 🚨 THE MANDATORY MASTER PROFILE CHECKLIST 🚨 ---
-        To accurately suggest welfare schemes, you MUST know the answers to these core data points. Read the Conversation History carefully. Determine what is known and what is missing:
-        1. Gender
-        2. Age
-        3. State of Residence
-        4. Urban or Rural area
-        5. Caste Category (General, SC, ST, OBC)
-        6. Disability status (Yes/No)
-        7. Minority status (Yes/No)
-        8. Student status (Yes/No)
-        9. Financial Status: Are they in the BPL (Below Poverty Line) category? 
-           - If Yes: Ask if they are facing Destitute / Penury / Extreme Hardship.
-           - If No: Ask for their Family's Annual Income.
-        10. Specific Problem / Purpose: What specific help do they need? (e.g., house, health, crop damage, business, etc.)
+        CRITICAL PROFILING RULE: You MUST NOT call the `search_eligible_schemes` tool if the user has not explicitly told you their exact State, Age, Gender, Caste, and Income. NEVER guess, assume, or use placeholders like 'unknown'. If any are missing, stay in STEP 1.
 
-        --- STRICT ANTI-LOOPING RULES (MEMORY & CONTEXT) ---
-        1. If the Chat History shows you ALREADY told the user they are "Eligible", DO NOT check eligibility again. Move strictly to application or general chat.
-        2. If the Chat History shows you are already collecting Aadhaar/Mobile, you are in the APPLICATION stage. DO NOT go backward to profiling.
-        3. If the user asks about finding a "CSC", "Seva Centre", or "Where to submit", DO NOT restart the scheme questions. Simply reply: "The system has automatically located the nearest CSC center for you using GPS, as shown on the map below." (Set intent to "chat", set eligibility_status to "").
-        
-        --- LIVE DATABASE KNOWLEDGE (CRITICAL) ---
-        Based on the user's problem, our backend vector database found these highly relevant Indian government schemes. 
-        Read the Details, Eligibility, Documents Required, and Application Process carefully:
-        
-        {live_db_context}
-        -------------------------------------------
+        You strictly follow this 6-Step Pipeline and MUST output the exact corresponding "intent" in your JSON:
 
-        --- WORKFLOW SCENARIOS ---
-        
-        SCENARIO A: STRICT PROFILING & DISCOVERY (If ANY of the 10 checklist items are missing)
-        - Intent: "discover_schemes"
-        - Action: Look at the "profile_tracker" JSON object you are building. If ANY of those 10 items are missing or unknown, your ONLY job is to ask the user 1 or 2 of the missing questions. 
-        - CRITICAL GAG ORDER: DO NOT suggest any schemes yet. DO NOT name any schemes from the Database Knowledge. Empathize with their problem, and ask the missing profile questions (e.g., "I can help with that. First, could you tell me your age and which state you live in?").
-        - UI RULE: Set "eligibility_status" to "" (empty string) and "eligibility_criteria" to [].
-        
-        SCENARIO B: SCHEME EVALUATION (Once the checklist is COMPLETE)
-        - Intent: "check_specific"
-        - Action: Now evaluate their complete profile against the EXACT 'Eligibility Criteria' rules from the LIVE DATABASE KNOWLEDGE above.
-        - If "Not Eligible": Set "eligibility_status" to "Not Eligible", explain why with exact numbers. Ask if they want to look for other programs.
-        - If "Eligible": Tell them the good news! Set "eligibility_status" to "Eligible". Tell them a summary of the 'Benefits'. Ask: "Would you like me to generate your official application form now?"
-        
-        SCENARIO C: APPLICATION GENERATION 
-        - Intent: "apply_scheme"
-        - Action: The user is Eligible and said "Yes" to applying. Ask for strictly required document details (Aadhaar number, Mobile number, exact Address) AND any specific items listed under 'Documents Required' in the database.
-        - List missing application details in "missing_fields".
-        - UI RULE: To prevent UI glitches, set "eligibility_status" to "" (empty string) and "eligibility_criteria" to [].
-        
-        SCENARIO D: GRIEVANCE
-        - Intent: "file_rti" (If complaining about delays/money not arriving).
-        
-        SCENARIO E: POST-APPLICATION / GENERAL CHAT
-        - Intent: "chat"
-        - Action: Use this for general follow-up questions. If they ask how to apply, look at the 'Application Process' field in the database.
-        - UI RULE: Set "eligibility_status" to "" (empty string) and "eligibility_criteria" to [].
-        
-        Respond ONLY with this exact JSON structure (No markdown tags). Fill out the profile_tracker carefully:
+        STEP 1: PROFILING -> You MUST set "intent": "profiling"
+        Action: If ANY of the 6 details (Problem, State, Age, Gender, Caste, Income) are missing, politely ask the user for them (max 2 questions at a time). NEVER suggest schemes yet.
+
+        STEP 2: THE MENU -> You MUST set "intent": "suggest_menu"
+        Action: ONLY when you have all 6 details explicitly, call `search_eligible_schemes`. List the schemes with bullets, state their 'Main Benefit', and ask which one they want to explore.
+
+        STEP 3: DEEP DIVE -> You MUST set "intent": "explain_scheme"
+        Action: When the user chooses a scheme, call `get_scheme_deep_dive`. Explain documents/process using bullets. Ask if they want to apply.
+
+        STEP 4: FORM FILLING -> You MUST set "intent": "apply_scheme"
+        Action: If they say yes to applying, ask for their Aadhaar, Phone, and exact Address.
+
+        STEP 5: PDF GENERATION -> You MUST set "intent": "generate_pdf"
+        Action: WHEN the user provides their Aadhaar and Phone, you MUST set the intent exactly to "generate_pdf". Say: "I am generating your application PDF."
+
+        STEP 6: LOCATE CSC -> You MUST set "intent": "locate_csc"
+        Action: If the user asks for the nearest center or map, you MUST set the intent exactly to "locate_csc". Say: "I am locating the nearest Seva Kendra on the map."
+
+        CRITICAL FORMATTING RULES:
+        1. NEVER use asterisks (* or **) anywhere in your text.
+        2. Inside "response_text", use "\\n\\n" for paragraph breaks and "\\n• " for bullet points.
+        3. Your final output MUST ALWAYS be a valid JSON object matching this schema exactly:
         {{
-            "profile_tracker": {{
-                "gender": "extracted value or 'unknown'",
-                "age": "extracted value or 'unknown'",
-                "state": "extracted value or 'unknown'",
-                "urban_rural": "extracted value or 'unknown'",
-                "caste": "extracted value or 'unknown'",
-                "disability": "extracted value or 'unknown'",
-                "minority": "extracted value or 'unknown'",
-                "student": "extracted value or 'unknown'",
-                "financial_status": "extracted value or 'unknown'",
-                "problem": "extracted value or 'unknown'"
-            }},
-            "intent": "discover_schemes, check_specific, apply_scheme, file_rti, or chat",
-            "predicted_scheme_name": "Mapped Scheme Name or 'Profiling in Progress'",
-            "entities": {{"key": "Directly translate to English. NEVER use placeholders like '[Requires English Translation]'."}},
-            "missing_fields": ["List of missing details ONLY IF in apply_scheme intent"],
-            "eligibility_status": "Eligible / Almost Eligible / Not Eligible / Pending Information / or empty string",
-            "eligibility_reason": "Exact numerical reason if checking eligibility, else empty",
-            "eligibility_criteria": [
-                {{"criterion": "Exact numerical rule from database", "status": "met/not_met/pending"}}
-            ],
-            "rti_draft_text": "Draft if RTI, else empty",
-            "response_text": "Your highly professional, empathetic, and stage-appropriate response strictly in {language}"
+            "intent": "profiling, suggest_menu, explain_scheme, apply_scheme, generate_pdf, or locate_csc",
+            "predicted_scheme_name": "Name of scheme being discussed, or empty",
+            "response_text": "Your properly formatted conversational reply.",
+            "entities": {{}},
+            "profile_tracker": {{"problem": "", "state": "", "age": "", "gender": "", "caste": "", "income": ""}}
         }}
         """
+
+        messages = [
+            {"role": "user", "content": [{"text": f"Chat History:\n{chat_history}\n\nUser's Current Message: {transcript}"}]}
+        ]
+
+        # --- 5. THE AGENTIC LOOP ---
         
         response = bedrock.converse(
-            modelId="amazon.nova-lite-v1:0",
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 1000, "temperature": 0.2}
+            modelId= "amazon.nova-pro-v1:0",
+            messages=messages,
+            system=[{"text": system_prompt}],
+            toolConfig=tool_config,
+            inferenceConfig={"maxTokens": 1000, "temperature": 0.1}
         )
         
-        ai_response_text = response['output']['message']['content'][0]['text']
-        cleaned_text = ai_response_text.strip().replace("```json", "").replace("```", "").strip()
-        result_json = json.loads(cleaned_text)
+        stop_reason = response['stopReason']
+        message_content = response['output']['message']['content']
+
         
+        if stop_reason == 'tool_use':
+            tool_results = []
+            for block in message_content:
+                if 'toolUse' in block:
+                    tool_name = block['toolUse']['name']
+                    tool_inputs = block['toolUse']['input']
+                    tool_id = block['toolUse']['toolUseId']
+                    
+                    # Execute the Python Tool
+                    if tool_name == "search_eligible_schemes":
+                        tool_output = search_eligible_schemes(**tool_inputs)
+                    elif tool_name == "get_scheme_deep_dive":
+                        tool_output = get_scheme_deep_dive(**tool_inputs)
+                    else:
+                        tool_output = '{"error": "Unknown tool"}'
+                        
+                    tool_results.append({
+                        "toolResult": {
+                            "toolUseId": tool_id,
+                            "content": [{"text": tool_output}]
+                        }
+                    })
+            
+            
+            messages.append({"role": "assistant", "content": message_content})
+            messages.append({"role": "user", "content": tool_results})
+            
+            response = bedrock.converse(
+                modelId="amazon.nova-pro-v1:0",
+                messages=messages,
+                system=[{"text": system_prompt}],
+                toolConfig=tool_config,
+                inferenceConfig={"maxTokens": 1000, "temperature": 0.1}
+            )
+            final_ai_text = response['output']['message']['content'][0]['text']
+        else:
+            
+            final_ai_text = message_content[0]['text']
+
+       
+        try:
+           
+            json_match = re.search(r'\{.*\}', final_ai_text, re.DOTALL)
+            
+            if json_match:
+                cleaned_text = json_match.group(0)
+            else:
+                cleaned_text = final_ai_text
+                
+            result_json = json.loads(cleaned_text)
+            
+        except json.JSONDecodeError as e:
+            
+            print(f"🚨 JSON Parsing Failed! Raw AI Output was:\n{final_ai_text}")
+           
+            result_json = {
+                "intent": "chat",
+                "predicted_scheme_name": "",
+                "response_text": final_ai_text.strip(), 
+                "entities": {},
+                "profile_tracker": {"problem": "", "state": "", "age": "", "gender": "", "caste": "", "income": ""}
+            }
+
+        # PII Masking Logic
         entities = result_json.get('entities', {})
         for key, value in entities.items():
-            key_lower = key.lower()
             val_str = str(value).replace(" ", "")
-            
-            # Mask Aadhaar
-            if 'aadhaar' in key_lower or 'aadhar' in key_lower or 'uid' in key_lower:
+            if 'aadhaar' in key.lower() or 'aadhar' in key.lower() or 'uid' in key.lower():
                 if len(val_str) >= 4:
                     entities[key] = f"XXXX-XXXX-{val_str[-4:]}"
                     result_json['pii_secured'] = True
-            
-            # Mask Phone Numbers
-            elif 'phone' in key_lower or 'mobile' in key_lower:
+            elif 'phone' in key.lower() or 'mobile' in key.lower():
                 if len(val_str) >= 4:
                     entities[key] = f"XXXXXX{val_str[-4:]}"
                     result_json['pii_secured'] = True
@@ -198,6 +253,7 @@ def lambda_handler(event, context):
         result_json['entities'] = entities
         result_json['session_id'] = session_id
 
+        # Save to DB
         table.put_item(Item={
             'session_id': session_id,
             'latest_transcript': transcript,

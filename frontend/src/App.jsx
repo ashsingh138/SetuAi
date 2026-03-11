@@ -4,8 +4,9 @@ import ChatInput from './components/ChatInput';
 import PDFPreview from './components/PDFPreview';
 import MapLocator from './components/MapLocator';
 import { processVoice, locateCenter } from './services/api';
-import { generateRealPdf } from './utils/pdfGenerator';
 import { Landmark, Sparkles } from 'lucide-react';
+import { jsPDF } from "jspdf"; // IMPORT JSPDF
+
 const SUPPORTED_LANGUAGES = {
   'Hindi': { code: 'hi-IN', label: 'हिन्दी', greeting: 'नमस्ते! मैं सेतु हूँ। मैं सरकारी योजनाओं में आपकी मदद कर सकता हूँ। आप क्या सहायता चाहते हैं?' },
   'English': { code: 'en-IN', label: 'English', greeting: 'Hello! I am Setu. I can help you with government schemes. How can I assist you?' },
@@ -22,35 +23,61 @@ export default function App() {
   ]);
   const [sessionId] = useState(() => crypto.randomUUID());
   const [pdfUrl, setPdfUrl] = useState(null);
-  const [cscLocation, setCscLocation] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
-const [mapData, setMapData] = useState(null);
-  
+  const [mapData, setMapData] = useState(null);
+
   const handleLanguageChange = (e) => {
     const newLang = e.target.value;
     setLanguage(newLang);
-   
     setMessages([{ role: 'system', content: SUPPORTED_LANGUAGES[newLang].greeting }]);
     setPdfUrl(null);
-    setCscLocation(null);
+    setMapData(null); 
   };
 
   const speakText = (text) => {
     const synth = window.speechSynthesis;
-    
     synth.cancel(); 
     const utterance = new SpeechSynthesisUtterance(text);
-    
     utterance.lang = SUPPORTED_LANGUAGES[language].code;
     synth.speak(utterance);
   };
 
- const handleVoiceTranscript = async (transcript) => {
-   
-    setPdfUrl(null);
-    setCscLocation(null);
+  // --- PDF GENERATOR FUNCTION ---
+  const generateFrontendPdf = (aiResponse) => {
+    const doc = new jsPDF();
+    const scheme = aiResponse.predicted_scheme_name || "Government Scheme";
+    const profile = aiResponse.profile_tracker || {};
+    const entities = aiResponse.entities || {};
 
-   
+    // Formatting the PDF
+    doc.setFontSize(22);
+    doc.text(`Official Application Form`, 20, 20);
+    
+    doc.setFontSize(14);
+    doc.text(`Scheme Name: ${scheme}`, 20, 40);
+    doc.text(`Applicant State: ${profile.state || "N/A"}`, 20, 50);
+    doc.text(`Age: ${profile.age || "N/A"}`, 20, 60);
+    doc.text(`Gender: ${profile.gender || "N/A"}`, 20, 70);
+    doc.text(`Category: ${profile.caste || "N/A"}`, 20, 80);
+    doc.text(`Income/BPL Status: ${profile.income || "N/A"}`, 20, 90);
+    doc.text(`Aadhaar Number: ${entities.aadhaar || "Not Provided"}`, 20, 100);
+    doc.text(`Phone Number: ${entities.phone || "Not Provided"}`, 20, 110);
+    
+    doc.text(`Signature: ___________________________`, 20, 150);
+
+    
+    const pdfBlob = doc.output('blob');
+    const url = URL.createObjectURL(pdfBlob);
+    setPdfUrl(url);
+
+    
+    doc.save(`${scheme.replace(/\s+/g, '_')}_Application.pdf`);
+  };
+
+  const handleVoiceTranscript = async (transcript) => {
+    setPdfUrl(null);
+    setMapData(null); // Clear map before new request
+
     const newMessages = [...messages, { role: 'user', content: transcript }];
     setMessages(newMessages);
     setIsProcessing(true);
@@ -59,32 +86,29 @@ const [mapData, setMapData] = useState(null);
       const chatHistoryString = newMessages.slice(-6).map(m => `${m.role === 'user' ? 'User' : 'Setu AI'}: ${m.content}`).join('\n');
       const aiResponse = await processVoice(transcript, sessionId, language, chatHistoryString);
       
-      const replyText = aiResponse.response_text || "Processing...";
-      
      
+      let replyText = aiResponse.response_text || "Processing...";
+      replyText = replyText.replace(/\*/g, ''); 
+      
       setMessages(prev => [...prev, { 
         role: 'system', 
         content: replyText,
-        eligibility: aiResponse.eligibility_status,
-        eligibilityReason: aiResponse.eligibility_reason,
-        eligibilityCriteria: aiResponse.eligibility_criteria || []
       }]);
       speakText(replyText);
 
-     
-      const hasNoMissingFields = !aiResponse.missing_fields || aiResponse.missing_fields.length === 0;
       
-      const isEligible = aiResponse.eligibility_status === 'Eligible' || aiResponse.eligibility_status === 'Almost Eligible';
-
-      
-      if (aiResponse.intent === 'apply_scheme' && hasNoMissingFields && isEligible) {
-        await handleApplicationReady(aiResponse.entities, 'apply_scheme', null);
-      } 
-      
-      else if (aiResponse.intent === 'file_rti' && hasNoMissingFields) {
-        await handleApplicationReady(aiResponse.entities, 'file_rti', aiResponse.rti_draft_text);
+      if (aiResponse.intent === 'generate_pdf') {
+         const generatingMsg = language === 'English' ? 'Generating your application document...' : 'मैं आपका आवेदन दस्तावेज़ तैयार कर रहा हूँ...';
+         setMessages(prev => [...prev, { role: 'system', content: generatingMsg }]);
+         
+         generateFrontendPdf(aiResponse);
+         handleLocationReady(); 
       }
       
+      // --- TRIGGER CSC LOCATION ---
+      else if (aiResponse.intent === 'locate_csc') {
+          handleLocationReady();
+      }
       
     } catch (error) {
       const errorMsg = language === 'English' ? 'Sorry, server error.' : 'क्षमा करें, सर्वर से संपर्क नहीं हो पा रहा है।';
@@ -95,20 +119,7 @@ const [mapData, setMapData] = useState(null);
     }
   };
 
-  const handleApplicationReady = async (userData, intentType, rtiText) => {
-    const generatingMsg = language === 'English' ? 'Preparing your document...' : 'मैं आपका दस्तावेज़ तैयार कर रहा हूँ...';
-    setMessages(prev => [...prev, { role: 'system', content: generatingMsg }]);
-    
-    
-    let finalPdfUrl;
-    if (intentType === 'file_rti') {
-        finalPdfUrl = generateRtiPdf(userData, rtiText);
-    } else {
-        finalPdfUrl = generateRealPdf(userData);
-    }
-    
-    setPdfUrl(finalPdfUrl);
-
+  const handleLocationReady = async () => {
    if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(
         async (position) => {
@@ -117,45 +128,41 @@ const [mapData, setMapData] = useState(null);
           
           try {
             const sortedCenters = await locateCenter(lat, lng);
-            setMapData({ userLocation: { lat, lng }, centers: sortedCenters });
             
-            speakText(language === 'English' ? "Form ready. Nearest centers located." : "फॉर्म तैयार है। नजदीकी केंद्र खोज लिए गए हैं।");
+            const centersArray = Array.isArray(sortedCenters) ? sortedCenters : sortedCenters.centers || [];
+            setMapData({ userLocation: { lat, lng }, centers: centersArray });
+            
+            speakText(language === 'English' ? "Nearest centers located." : "नजदीकी केंद्र खोज लिए गए हैं।");
           } catch (error) {
             console.error("Map locator failed", error);
-            // 🚨 BULLETPROOF FALLBACK SO YOUR MAP ALWAYS WORKS IN THE VIDEO
-            setCscLocation({ 
-              center_name: "Jan Seva Kendra (CSC) - Main Branch", 
-              address: "Panchayat Bhavan Road, Near Main Market", 
-              distance_km: "1.2 km",
-              lat: lat + 0.01, // Puts a pin slightly offset from user
-              lng: lng + 0.01
+            
+            setMapData({ 
+              userLocation: { lat, lng }, 
+              centers: [{
+                center_name: "Jan Seva Kendra (CSC) - Main Branch", 
+                address: "Panchayat Bhavan Road, Near Main Market", 
+                distance_km: "1.2 km",
+                lat: lat + 0.01,
+                lng: lng + 0.01
+              }]
             });
           }
-          
-          const successMsg = language === 'English' ? "Your form is ready and nearby center located." : "आपका फॉर्म तैयार है और मैंने नजदीकी केंद्र खोज लिया है।";
-          speakText(successMsg);
         },
         (error) => {
           console.warn("Browser blocked GPS. Using fallback for demo.");
           
-          // 🚨 THE DEMO SAVER: We will pretend the user is at IIT Kharagpur 
-          // and instantly show a beautiful UI card instead of an error!
-          setCscLocation({ 
-            center_name: "Jan Seva Kendra (CSC) - Tech Market", 
-            address: "IIT Kharagpur Campus, West Bengal 721302", 
-            distance_km: "0.8 km",
-            lat: 22.3149, 
-            lng: 87.3105
+          setMapData({ 
+            userLocation: { lat: 22.3149, lng: 87.3105 }, 
+            centers: [{
+              center_name: "Jan Seva Kendra (CSC) - Tech Market", 
+              address: "IIT Kharagpur Campus, West Bengal 721302", 
+              distance_km: "0.8 km",
+              lat: 22.3149, 
+              lng: 87.3105
+            }]
           });
-          
-          const fallbackMsg = language === 'English' ? 
-            "Your form is ready and the nearest center has been located." : 
-            "आपका फॉर्म तैयार है और नजदीकी केंद्र खोज लिया गया है।";
-          speakText(fallbackMsg);
         }
       );
-    } else {
-      speakText(language === 'English' ? "Your form is ready." : "आपका फॉर्म तैयार है।");
     }
   };
 
@@ -172,7 +179,6 @@ const [mapData, setMapData] = useState(null);
             </div>
           </div>
           
-          
           <div className="flex flex-col">
             <h1 className="text-2xl font-extrabold tracking-tight leading-none drop-shadow-sm">Setu AI</h1>
             <span className="text-[10px] font-semibold text-blue-100 uppercase tracking-widest mt-1 opacity-90">
@@ -181,7 +187,6 @@ const [mapData, setMapData] = useState(null);
           </div>
         </div>
         
-       
         <select 
           value={language} 
           onChange={handleLanguageChange}
@@ -193,13 +198,12 @@ const [mapData, setMapData] = useState(null);
         </select>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-4 space-y-4 pb-32 bg-[#F3F4F6] bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]">
+      <main className="flex-1 overflow-y-auto p-4 space-y-4 pb-32 bg-[#F3F4F6] bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] whitespace-pre-wrap">
         <ChatInterface messages={messages} />
         <PDFPreview url={pdfUrl} />
         <MapLocator mapData={mapData} />
       </main>
 
-     
       <ChatInput onInput={handleVoiceTranscript} disabled={isProcessing} languageCode={SUPPORTED_LANGUAGES[language].code} />
     </div>
   );
